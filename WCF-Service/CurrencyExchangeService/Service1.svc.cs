@@ -1,33 +1,111 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.Serialization;
+using System.Net;
 using System.ServiceModel;
-using System.ServiceModel.Web;
 using System.Text;
+using System.Web.Script.Serialization;
 
 namespace CurrencyExchangeService
 {
-    // NOTE: You can use the "Rename" command on the "Refactor" menu to change the class name "Service1" in code, svc and config file together.
-    // NOTE: In order to launch WCF Test Client for testing this service, please select Service1.svc or Service1.svc.cs at the Solution Explorer and start debugging.
     public class Service1 : IService1
     {
-        public string GetData(int value)
+        private static readonly string[] SupportedCurrencies =
         {
-            return string.Format("You entered: {0}", value);
+            "PLN", "USD", "EUR", "GBP", "CHF", "JPY", "CZK", "SEK", "NOK", "DKK"
+        };
+
+        public string[] GetSupportedCurrencies()
+        {
+            return SupportedCurrencies;
         }
 
-        public CompositeType GetDataUsingDataContract(CompositeType composite)
+        public decimal GetExchangeRate(string currencyCode)
         {
-            if (composite == null)
+            string code = NormalizeCurrencyCode(currencyCode);
+
+            if (code == "PLN")
             {
-                throw new ArgumentNullException("composite");
+                return 1m;
             }
-            if (composite.BoolValue)
+
+            try
             {
-                composite.StringValue += "Suffix";
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+
+                string url = $"https://api.nbp.pl/api/exchangerates/rates/a/{code}/?format=json";
+
+                using (WebClient client = new WebClient())
+                {
+                    client.Encoding = Encoding.UTF8;
+
+                    string json = client.DownloadString(url);
+
+                    JavaScriptSerializer serializer = new JavaScriptSerializer();
+                    NbpResponse response = serializer.Deserialize<NbpResponse>(json);
+
+                    if (response == null || response.rates == null || response.rates.Count == 0)
+                    {
+                        throw new FaultException("Exchange rate data was not found.");
+                    }
+
+                    return response.rates[0].mid;
+                }
             }
-            return composite;
+            catch (WebException)
+            {
+                throw new FaultException("Currency code was not found in the NBP API.");
+            }
+            catch (Exception ex)
+            {
+                throw new FaultException("Error while retrieving exchange rate: " + ex.Message);
+            }
         }
+
+        public decimal ConvertCurrency(string fromCurrency, string toCurrency, decimal amount)
+        {
+            if (amount <= 0)
+            {
+                throw new FaultException("Amount must be greater than zero.");
+            }
+
+            decimal fromRate = GetExchangeRate(fromCurrency);
+            decimal toRate = GetExchangeRate(toCurrency);
+
+            decimal result = amount * fromRate / toRate;
+
+            return Math.Round(result, 2);
+        }
+
+        private string NormalizeCurrencyCode(string currencyCode)
+        {
+            if (string.IsNullOrWhiteSpace(currencyCode))
+            {
+                throw new FaultException("Currency code cannot be empty.");
+            }
+
+            string code = currencyCode.Trim().ToUpper();
+
+            if (code.Length != 3)
+            {
+                throw new FaultException("Currency code must have exactly 3 letters.");
+            }
+
+            return code;
+        }
+    }
+
+    public class NbpResponse
+    {
+        public string table { get; set; }
+        public string currency { get; set; }
+        public string code { get; set; }
+        public List<NbpRate> rates { get; set; }
+    }
+
+    public class NbpRate
+    {
+        public string no { get; set; }
+        public string effectiveDate { get; set; }
+        public decimal mid { get; set; }
     }
 }

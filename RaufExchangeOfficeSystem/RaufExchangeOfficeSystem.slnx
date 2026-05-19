@@ -1,3 +1,4 @@
 <Solution>
+  <Project Path="../Client-Application/CurrencyExchangeClient/CurrencyExchangeClient.csproj" Id="8b979025-8a66-4fc3-a718-ea7c6baa3cf2" />
   <Project Path="../WCF-Service/CurrencyExchangeService/CurrencyExchangeService.csproj" Id="732bb5a7-ef55-4688-9076-563255eb41d4" />
 </Solution>

@@ -1,12 +1,66 @@
 ﻿<Window x:Class="CurrencyExchangeClient.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:CurrencyExchangeClient"
-        mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
-        
+        Title="Currency Exchange Office" Height="520" Width="760"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Text="Currency Exchange Office"
+                   FontSize="28"
+                   FontWeight="Bold"
+                   Margin="0,0,0,20"/>
+
+        <Border Grid.Row="1"
+                BorderBrush="#CCCCCC"
+                BorderThickness="1"
+                Padding="20"
+                CornerRadius="8">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="From currency:" Margin="0,0,10,10"/>
+                <ComboBox Grid.Row="0" Grid.Column="1" x:Name="FromCurrencyComboBox" Height="28" Margin="0,0,0,10"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="To currency:" Margin="0,0,10,10"/>
+                <ComboBox Grid.Row="1" Grid.Column="1" x:Name="ToCurrencyComboBox" Height="28" Margin="0,0,0,10"/>
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Amount:" Margin="0,0,10,10"/>
+                <TextBox Grid.Row="2" Grid.Column="1" x:Name="AmountTextBox" Height="28" Text="100" Margin="0,0,0,10"/>
+
+                <Button Grid.Row="3" Grid.Column="1"
+                        Content="Convert"
+                        Width="120"
+                        Height="35"
+                        HorizontalAlignment="Left"
+                        Click="ConvertButton_Click"/>
+            </Grid>
+        </Border>
+
+        <TextBlock Grid.Row="2"
+                   x:Name="ResultTextBlock"
+                   Text="Result will be displayed here."
+                   FontSize="18"
+                   FontWeight="SemiBold"
+                   Margin="0,20,0,15"/>
+
+        <GroupBox Grid.Row="3" Header="Transaction history">
+            <ListBox x:Name="HistoryListBox"/>
+        </GroupBox>
     </Grid>
 </Window>

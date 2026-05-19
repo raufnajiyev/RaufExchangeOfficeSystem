@@ -32,7 +32,7 @@ namespace CurrencyExchangeService
             {
                 ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
 
-                string url = $"https://api.nbp.pl/api/exchangerates/rates/a/{code}/?format=json";
+                string url = "https://api.nbp.pl/api/exchangerates/rates/a/" + code + "/?format=json";
 
                 using (WebClient client = new WebClient())
                 {

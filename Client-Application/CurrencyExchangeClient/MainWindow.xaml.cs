@@ -16,6 +16,15 @@ namespace CurrencyExchangeClient
 
         [OperationContract]
         string[] GetSupportedCurrencies();
+
+        [OperationContract]
+        bool EnsureDatabaseCreated();
+
+        [OperationContract]
+        bool SaveTransaction(string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount);
+
+        [OperationContract]
+        string[] GetRecentTransactions();
     }
 
     public partial class MainWindow : Window
@@ -26,6 +35,8 @@ namespace CurrencyExchangeClient
         {
             InitializeComponent();
             LoadCurrencies();
+            InitializeDatabase();
+            LoadTransactionHistory();
         }
 
         private void LoadCurrencies()
@@ -48,6 +59,59 @@ namespace CurrencyExchangeClient
             EndpointAddress endpoint = new EndpointAddress(ServiceUrl);
 
             return ChannelFactory<IService1>.CreateChannel(binding, endpoint);
+        }
+
+        private void InitializeDatabase()
+        {
+            IService1 client = null;
+            IClientChannel channel = null;
+
+            try
+            {
+                client = CreateServiceClient();
+                channel = (IClientChannel)client;
+
+                client.EnsureDatabaseCreated();
+
+                channel.Close();
+            }
+            catch
+            {
+                if (channel != null)
+                {
+                    channel.Abort();
+                }
+            }
+        }
+
+        private void LoadTransactionHistory()
+        {
+            IService1 client = null;
+            IClientChannel channel = null;
+
+            try
+            {
+                client = CreateServiceClient();
+                channel = (IClientChannel)client;
+
+                string[] transactions = client.GetRecentTransactions();
+
+                HistoryListBox.Items.Clear();
+
+                foreach (string transaction in transactions)
+                {
+                    HistoryListBox.Items.Add(transaction);
+                }
+
+                channel.Close();
+            }
+            catch
+            {
+                if (channel != null)
+                {
+                    channel.Abort();
+                }
+            }
         }
 
         private void ConvertButton_Click(object sender, RoutedEventArgs e)
@@ -85,12 +149,14 @@ namespace CurrencyExchangeClient
 
                 decimal result = client.ConvertCurrency(fromCurrency, toCurrency, amount);
 
-                string resultText = $"{amount} {fromCurrency} = {result} {toCurrency}";
+                client.SaveTransaction(fromCurrency, toCurrency, amount, result);
 
+                string resultText = $"{amount} {fromCurrency} = {result} {toCurrency}";
                 ResultTextBlock.Text = resultText;
-                HistoryListBox.Items.Insert(0, $"{DateTime.Now:g} | {resultText}");
 
                 channel.Close();
+
+                LoadTransactionHistory();
             }
             catch (Exception ex)
             {

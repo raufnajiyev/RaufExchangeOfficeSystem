@@ -13,5 +13,14 @@ namespace CurrencyExchangeService
 
         [OperationContract]
         string[] GetSupportedCurrencies();
+
+        [OperationContract]
+        bool EnsureDatabaseCreated();
+
+        [OperationContract]
+        bool SaveTransaction(string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount);
+
+        [OperationContract]
+        string[] GetRecentTransactions();
     }
 }

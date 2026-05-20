@@ -30,10 +30,19 @@ namespace CurrencyExchangeClient
         string[] GetUserBalances(int userId);
 
         [OperationContract]
+        bool TopUpBalance(int userId, string currencyCode, decimal amount);
+
+        [OperationContract]
+        decimal ExchangeUserCurrency(int userId, string fromCurrency, string toCurrency, decimal amount);
+
+        [OperationContract]
         bool SaveUserTransaction(int userId, string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount);
 
         [OperationContract]
         string[] GetRecentTransactionsByUser(int userId);
+
+        [OperationContract]
+        string[] GetHistoricalRates(string currencyCode, int days);
 
         [OperationContract]
         bool SaveTransaction(string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount);
@@ -66,9 +75,11 @@ namespace CurrencyExchangeClient
 
             FromCurrencyComboBox.ItemsSource = currencies;
             ToCurrencyComboBox.ItemsSource = currencies;
+            TopUpCurrencyComboBox.ItemsSource = currencies;
 
             FromCurrencyComboBox.SelectedItem = "USD";
             ToCurrencyComboBox.SelectedItem = "EUR";
+            TopUpCurrencyComboBox.SelectedItem = "PLN";
         }
 
         private IService1 CreateServiceClient()
@@ -185,6 +196,7 @@ namespace CurrencyExchangeClient
 
                     HistoryListBox.Items.Clear();
                     BalancesListBox.Items.Clear();
+                    RatesListBox.Items.Clear();
 
                     if (showMessage)
                     {
@@ -290,17 +302,9 @@ namespace CurrencyExchangeClient
                 return;
             }
 
-            string amountText = AmountTextBox.Text.Replace(",", ".");
-
-            if (!decimal.TryParse(amountText, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal amount))
+            if (!TryReadAmount(AmountTextBox.Text, out decimal amount))
             {
                 MessageBox.Show("Please enter a valid amount.");
-                return;
-            }
-
-            if (amount <= 0)
-            {
-                MessageBox.Show("Amount must be greater than zero.");
                 return;
             }
 
@@ -312,9 +316,7 @@ namespace CurrencyExchangeClient
                 client = CreateServiceClient();
                 channel = (IClientChannel)client;
 
-                decimal result = client.ConvertCurrency(fromCurrency, toCurrency, amount);
-
-                client.SaveUserTransaction(currentUserId, fromCurrency, toCurrency, amount, result);
+                decimal result = client.ExchangeUserCurrency(currentUserId, fromCurrency, toCurrency, amount);
 
                 string resultText = amount + " " + fromCurrency + " = " + result + " " + toCurrency;
                 ResultTextBlock.Text = resultText;
@@ -333,6 +335,147 @@ namespace CurrencyExchangeClient
 
                 MessageBox.Show("Service error: " + ex.Message);
             }
+        }
+
+        private void TopUpButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (currentUserId <= 0)
+            {
+                MessageBox.Show("Please login first.");
+                return;
+            }
+
+            string currencyCode = TopUpCurrencyComboBox.SelectedItem?.ToString();
+
+            if (string.IsNullOrWhiteSpace(currencyCode))
+            {
+                MessageBox.Show("Please select a currency.");
+                return;
+            }
+
+            if (!TryReadAmount(TopUpAmountTextBox.Text, out decimal amount))
+            {
+                MessageBox.Show("Please enter a valid top-up amount.");
+                return;
+            }
+
+            IService1 client = null;
+            IClientChannel channel = null;
+
+            try
+            {
+                client = CreateServiceClient();
+                channel = (IClientChannel)client;
+
+                client.TopUpBalance(currentUserId, currencyCode, amount);
+
+                channel.Close();
+
+                ResultTextBlock.Text = "Top-up completed: " + amount + " " + currencyCode;
+
+                LoadBalances();
+            }
+            catch (Exception ex)
+            {
+                if (channel != null)
+                {
+                    channel.Abort();
+                }
+
+                MessageBox.Show("Top-up error: " + ex.Message);
+            }
+        }
+
+        private void CheckRateButton_Click(object sender, RoutedEventArgs e)
+        {
+            string currencyCode = FromCurrencyComboBox.SelectedItem?.ToString();
+
+            if (string.IsNullOrWhiteSpace(currencyCode))
+            {
+                MessageBox.Show("Please select a currency.");
+                return;
+            }
+
+            IService1 client = null;
+            IClientChannel channel = null;
+
+            try
+            {
+                client = CreateServiceClient();
+                channel = (IClientChannel)client;
+
+                decimal rate = client.GetExchangeRate(currencyCode);
+
+                RatesListBox.Items.Insert(0, "Current rate: " + currencyCode + " = " + rate + " PLN");
+
+                channel.Close();
+            }
+            catch (Exception ex)
+            {
+                if (channel != null)
+                {
+                    channel.Abort();
+                }
+
+                MessageBox.Show("Rate error: " + ex.Message);
+            }
+        }
+
+        private void HistoricalRatesButton_Click(object sender, RoutedEventArgs e)
+        {
+            string currencyCode = FromCurrencyComboBox.SelectedItem?.ToString();
+
+            if (string.IsNullOrWhiteSpace(currencyCode))
+            {
+                MessageBox.Show("Please select a currency.");
+                return;
+            }
+
+            IService1 client = null;
+            IClientChannel channel = null;
+
+            try
+            {
+                client = CreateServiceClient();
+                channel = (IClientChannel)client;
+
+                string[] rates = client.GetHistoricalRates(currencyCode, 7);
+
+                RatesListBox.Items.Clear();
+
+                foreach (string rate in rates)
+                {
+                    RatesListBox.Items.Add(rate);
+                }
+
+                channel.Close();
+            }
+            catch (Exception ex)
+            {
+                if (channel != null)
+                {
+                    channel.Abort();
+                }
+
+                MessageBox.Show("Historical rates error: " + ex.Message);
+            }
+        }
+
+        private bool TryReadAmount(string input, out decimal amount)
+        {
+            string amountText = input.Replace(",", ".");
+
+            if (!decimal.TryParse(amountText, NumberStyles.Any, CultureInfo.InvariantCulture, out amount))
+            {
+                return false;
+            }
+
+            if (amount <= 0)
+            {
+                return false;
+            }
+
+            return true;
         }
     }
 }

@@ -281,6 +281,154 @@ namespace CurrencyExchangeService
             return balances.ToArray();
         }
 
+        public bool TopUpBalance(int userId, string currencyCode, decimal amount)
+        {
+            if (userId <= 0)
+            {
+                throw new FaultException("User is not valid.");
+            }
+
+            if (amount <= 0)
+            {
+                throw new FaultException("Top-up amount must be greater than zero.");
+            }
+
+            string code = NormalizeCurrencyCode(currencyCode);
+
+            try
+            {
+                EnsureDatabaseCreated();
+
+                using (SqlConnection connection = new SqlConnection(DatabaseConnectionString))
+                {
+                    connection.Open();
+
+                    string checkSql =
+                        @"SELECT COUNT(*)
+                          FROM Balances
+                          WHERE UserId = @UserId AND CurrencyCode = @CurrencyCode;";
+
+                    using (SqlCommand checkCommand = new SqlCommand(checkSql, connection))
+                    {
+                        checkCommand.Parameters.AddWithValue("@UserId", userId);
+                        checkCommand.Parameters.AddWithValue("@CurrencyCode", code);
+
+                        int count = Convert.ToInt32(checkCommand.ExecuteScalar());
+
+                        if (count == 0)
+                        {
+                            string insertSql =
+                                @"INSERT INTO Balances (UserId, CurrencyCode, Amount)
+                                  VALUES (@UserId, @CurrencyCode, @Amount);";
+
+                            using (SqlCommand insertCommand = new SqlCommand(insertSql, connection))
+                            {
+                                insertCommand.Parameters.AddWithValue("@UserId", userId);
+                                insertCommand.Parameters.AddWithValue("@CurrencyCode", code);
+                                insertCommand.Parameters.AddWithValue("@Amount", amount);
+                                insertCommand.ExecuteNonQuery();
+                            }
+                        }
+                        else
+                        {
+                            string updateSql =
+                                @"UPDATE Balances
+                                  SET Amount = Amount + @Amount
+                                  WHERE UserId = @UserId AND CurrencyCode = @CurrencyCode;";
+
+                            using (SqlCommand updateCommand = new SqlCommand(updateSql, connection))
+                            {
+                                updateCommand.Parameters.AddWithValue("@UserId", userId);
+                                updateCommand.Parameters.AddWithValue("@CurrencyCode", code);
+                                updateCommand.Parameters.AddWithValue("@Amount", amount);
+                                updateCommand.ExecuteNonQuery();
+                            }
+                        }
+                    }
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                throw new FaultException("Top-up error: " + ex.Message);
+            }
+        }
+
+        public decimal ExchangeUserCurrency(int userId, string fromCurrency, string toCurrency, decimal amount)
+        {
+            if (userId <= 0)
+            {
+                throw new FaultException("User is not valid.");
+            }
+
+            if (amount <= 0)
+            {
+                throw new FaultException("Amount must be greater than zero.");
+            }
+
+            string fromCode = NormalizeCurrencyCode(fromCurrency);
+            string toCode = NormalizeCurrencyCode(toCurrency);
+
+            decimal convertedAmount = ConvertCurrency(fromCode, toCode, amount);
+
+            try
+            {
+                EnsureDatabaseCreated();
+
+                using (SqlConnection connection = new SqlConnection(DatabaseConnectionString))
+                {
+                    connection.Open();
+
+                    SqlTransaction transaction = connection.BeginTransaction();
+
+                    try
+                    {
+                        decimal currentBalance = GetBalance(connection, transaction, userId, fromCode);
+
+                        if (currentBalance < amount)
+                        {
+                            throw new FaultException("Insufficient balance.");
+                        }
+
+                        UpdateBalance(connection, transaction, userId, fromCode, -amount);
+                        UpdateBalance(connection, transaction, userId, toCode, convertedAmount);
+
+                        string insertTransactionSql =
+                            @"INSERT INTO Transactions (UserId, FromCurrency, ToCurrency, Amount, ConvertedAmount)
+                              VALUES (@UserId, @FromCurrency, @ToCurrency, @Amount, @ConvertedAmount);";
+
+                        using (SqlCommand command = new SqlCommand(insertTransactionSql, connection, transaction))
+                        {
+                            command.Parameters.AddWithValue("@UserId", userId);
+                            command.Parameters.AddWithValue("@FromCurrency", fromCode);
+                            command.Parameters.AddWithValue("@ToCurrency", toCode);
+                            command.Parameters.AddWithValue("@Amount", amount);
+                            command.Parameters.AddWithValue("@ConvertedAmount", convertedAmount);
+                            command.ExecuteNonQuery();
+                        }
+
+                        transaction.Commit();
+                    }
+                    catch
+                    {
+                        transaction.Rollback();
+                        throw;
+                    }
+                }
+
+                return convertedAmount;
+            }
+            catch (FaultException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new FaultException("Currency exchange error: " + ex.Message);
+            }
+        }
+
         public bool SaveUserTransaction(int userId, string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount)
         {
             try
@@ -302,7 +450,6 @@ namespace CurrencyExchangeService
                         command.Parameters.AddWithValue("@ToCurrency", NormalizeCurrencyCode(toCurrency));
                         command.Parameters.AddWithValue("@Amount", amount);
                         command.Parameters.AddWithValue("@ConvertedAmount", convertedAmount);
-
                         command.ExecuteNonQuery();
                     }
                 }
@@ -357,6 +504,61 @@ namespace CurrencyExchangeService
             return transactions.ToArray();
         }
 
+        public string[] GetHistoricalRates(string currencyCode, int days)
+        {
+            string code = NormalizeCurrencyCode(currencyCode);
+
+            if (days <= 0)
+            {
+                days = 7;
+            }
+
+            if (days > 30)
+            {
+                days = 30;
+            }
+
+            if (code == "PLN")
+            {
+                return new string[] { "PLN is the base currency. Historical API rates are not required." };
+            }
+
+            try
+            {
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+
+                string url = "https://api.nbp.pl/api/exchangerates/rates/a/" + code + "/last/" + days + "/?format=json";
+
+                using (WebClient client = new WebClient())
+                {
+                    client.Encoding = Encoding.UTF8;
+
+                    string json = client.DownloadString(url);
+
+                    JavaScriptSerializer serializer = new JavaScriptSerializer();
+                    NbpResponse response = serializer.Deserialize<NbpResponse>(json);
+
+                    if (response == null || response.rates == null || response.rates.Count == 0)
+                    {
+                        throw new FaultException("Historical exchange rate data was not found.");
+                    }
+
+                    List<string> history = new List<string>();
+
+                    foreach (NbpRate rate in response.rates)
+                    {
+                        history.Add(rate.effectiveDate + " | " + code + " = " + rate.mid + " PLN");
+                    }
+
+                    return history.ToArray();
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new FaultException("Historical rates error: " + ex.Message);
+            }
+        }
+
         public bool SaveTransaction(string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount)
         {
             return SaveUserTransaction(1, fromCurrency, toCurrency, amount, convertedAmount);
@@ -397,6 +599,75 @@ namespace CurrencyExchangeService
             {
                 command.Parameters.AddWithValue("@UserId", userId);
                 command.ExecuteNonQuery();
+            }
+        }
+
+        private decimal GetBalance(SqlConnection connection, SqlTransaction transaction, int userId, string currencyCode)
+        {
+            string sql =
+                @"SELECT Amount
+                  FROM Balances
+                  WHERE UserId = @UserId AND CurrencyCode = @CurrencyCode;";
+
+            using (SqlCommand command = new SqlCommand(sql, connection, transaction))
+            {
+                command.Parameters.AddWithValue("@UserId", userId);
+                command.Parameters.AddWithValue("@CurrencyCode", currencyCode);
+
+                object result = command.ExecuteScalar();
+
+                if (result == null)
+                {
+                    return 0;
+                }
+
+                return Convert.ToDecimal(result);
+            }
+        }
+
+        private void UpdateBalance(SqlConnection connection, SqlTransaction transaction, int userId, string currencyCode, decimal amountChange)
+        {
+            string checkSql =
+                @"SELECT COUNT(*)
+                  FROM Balances
+                  WHERE UserId = @UserId AND CurrencyCode = @CurrencyCode;";
+
+            using (SqlCommand checkCommand = new SqlCommand(checkSql, connection, transaction))
+            {
+                checkCommand.Parameters.AddWithValue("@UserId", userId);
+                checkCommand.Parameters.AddWithValue("@CurrencyCode", currencyCode);
+
+                int count = Convert.ToInt32(checkCommand.ExecuteScalar());
+
+                if (count == 0)
+                {
+                    string insertSql =
+                        @"INSERT INTO Balances (UserId, CurrencyCode, Amount)
+                          VALUES (@UserId, @CurrencyCode, @Amount);";
+
+                    using (SqlCommand insertCommand = new SqlCommand(insertSql, connection, transaction))
+                    {
+                        insertCommand.Parameters.AddWithValue("@UserId", userId);
+                        insertCommand.Parameters.AddWithValue("@CurrencyCode", currencyCode);
+                        insertCommand.Parameters.AddWithValue("@Amount", amountChange);
+                        insertCommand.ExecuteNonQuery();
+                    }
+                }
+                else
+                {
+                    string updateSql =
+                        @"UPDATE Balances
+                          SET Amount = Amount + @AmountChange
+                          WHERE UserId = @UserId AND CurrencyCode = @CurrencyCode;";
+
+                    using (SqlCommand updateCommand = new SqlCommand(updateSql, connection, transaction))
+                    {
+                        updateCommand.Parameters.AddWithValue("@UserId", userId);
+                        updateCommand.Parameters.AddWithValue("@CurrencyCode", currencyCode);
+                        updateCommand.Parameters.AddWithValue("@AmountChange", amountChange);
+                        updateCommand.ExecuteNonQuery();
+                    }
+                }
             }
         }
 

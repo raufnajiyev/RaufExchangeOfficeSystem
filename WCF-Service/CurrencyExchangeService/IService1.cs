@@ -27,10 +27,19 @@ namespace CurrencyExchangeService
         string[] GetUserBalances(int userId);
 
         [OperationContract]
+        bool TopUpBalance(int userId, string currencyCode, decimal amount);
+
+        [OperationContract]
+        decimal ExchangeUserCurrency(int userId, string fromCurrency, string toCurrency, decimal amount);
+
+        [OperationContract]
         bool SaveUserTransaction(int userId, string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount);
 
         [OperationContract]
         string[] GetRecentTransactionsByUser(int userId);
+
+        [OperationContract]
+        string[] GetHistoricalRates(string currencyCode, int days);
 
         [OperationContract]
         bool SaveTransaction(string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount);

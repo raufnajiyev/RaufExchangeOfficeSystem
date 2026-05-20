@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Data.SqlClient;
 using System.Net;
+using System.Security.Cryptography;
 using System.ServiceModel;
 using System.Text;
 using System.Web.Script.Serialization;
@@ -44,7 +45,6 @@ namespace CurrencyExchangeService
                 using (WebClient client = new WebClient())
                 {
                     client.Encoding = Encoding.UTF8;
-
                     string json = client.DownloadString(url);
 
                     JavaScriptSerializer serializer = new JavaScriptSerializer();
@@ -79,7 +79,6 @@ namespace CurrencyExchangeService
             decimal toRate = GetExchangeRate(toCurrency);
 
             decimal result = amount * fromRate / toRate;
-
             return Math.Round(result, 2);
         }
 
@@ -94,10 +93,7 @@ namespace CurrencyExchangeService
                     string createDatabaseSql =
                         "IF DB_ID('CurrencyExchangeOffice') IS NULL CREATE DATABASE CurrencyExchangeOffice;";
 
-                    using (SqlCommand command = new SqlCommand(createDatabaseSql, connection))
-                    {
-                        command.ExecuteNonQuery();
-                    }
+                    ExecuteNonQuery(connection, createDatabaseSql);
                 }
 
                 using (SqlConnection connection = new SqlConnection(DatabaseConnectionString))
@@ -139,22 +135,21 @@ namespace CurrencyExchangeService
                     ExecuteNonQuery(connection, createBalancesTableSql);
                     ExecuteNonQuery(connection, createTransactionsTableSql);
 
-                    string insertDemoUserSql =
-                        @"IF NOT EXISTS (SELECT 1 FROM Users WHERE Username = 'demo')
-                          INSERT INTO Users (Username, PasswordHash)
-                          VALUES ('demo', 'demo');";
+                    if (GetUserIdByUsername(connection, "demo") == -1)
+                    {
+                        string insertDemoUserSql =
+                            @"INSERT INTO Users (Username, PasswordHash)
+                              VALUES ('demo', @PasswordHash);";
 
-                    ExecuteNonQuery(connection, insertDemoUserSql);
+                        using (SqlCommand command = new SqlCommand(insertDemoUserSql, connection))
+                        {
+                            command.Parameters.AddWithValue("@PasswordHash", HashPassword("demo"));
+                            command.ExecuteNonQuery();
+                        }
+                    }
 
-                    string insertDemoBalancesSql =
-                        @"IF NOT EXISTS (SELECT 1 FROM Balances WHERE UserId = 1)
-                          BEGIN
-                              INSERT INTO Balances (UserId, CurrencyCode, Amount) VALUES (1, 'PLN', 1000.00);
-                              INSERT INTO Balances (UserId, CurrencyCode, Amount) VALUES (1, 'USD', 500.00);
-                              INSERT INTO Balances (UserId, CurrencyCode, Amount) VALUES (1, 'EUR', 300.00);
-                          END";
-
-                    ExecuteNonQuery(connection, insertDemoBalancesSql);
+                    int demoUserId = GetUserIdByUsername(connection, "demo");
+                    CreateDefaultBalances(connection, demoUserId);
                 }
 
                 return true;
@@ -165,7 +160,128 @@ namespace CurrencyExchangeService
             }
         }
 
-        public bool SaveTransaction(string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount)
+        public bool RegisterUser(string username, string password)
+        {
+            ValidateUserInput(username, password);
+            EnsureDatabaseCreated();
+
+            try
+            {
+                using (SqlConnection connection = new SqlConnection(DatabaseConnectionString))
+                {
+                    connection.Open();
+
+                    if (GetUserIdByUsername(connection, username) != -1)
+                    {
+                        throw new FaultException("Username already exists.");
+                    }
+
+                    string sql =
+                        @"INSERT INTO Users (Username, PasswordHash)
+                          VALUES (@Username, @PasswordHash);";
+
+                    using (SqlCommand command = new SqlCommand(sql, connection))
+                    {
+                        command.Parameters.AddWithValue("@Username", username.Trim());
+                        command.Parameters.AddWithValue("@PasswordHash", HashPassword(password));
+                        command.ExecuteNonQuery();
+                    }
+
+                    int userId = GetUserIdByUsername(connection, username);
+                    CreateDefaultBalances(connection, userId);
+                }
+
+                return true;
+            }
+            catch (FaultException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new FaultException("Registration error: " + ex.Message);
+            }
+        }
+
+        public int LoginUser(string username, string password)
+        {
+            ValidateUserInput(username, password);
+            EnsureDatabaseCreated();
+
+            try
+            {
+                using (SqlConnection connection = new SqlConnection(DatabaseConnectionString))
+                {
+                    connection.Open();
+
+                    string sql =
+                        @"SELECT UserId, PasswordHash
+                          FROM Users
+                          WHERE Username = @Username;";
+
+                    using (SqlCommand command = new SqlCommand(sql, connection))
+                    {
+                        command.Parameters.AddWithValue("@Username", username.Trim());
+
+                        using (SqlDataReader reader = command.ExecuteReader())
+                        {
+                            if (reader.Read())
+                            {
+                                int userId = Convert.ToInt32(reader["UserId"]);
+                                string storedPassword = reader["PasswordHash"].ToString();
+                                string hashedInput = HashPassword(password);
+
+                                if (storedPassword == hashedInput || storedPassword == password)
+                                {
+                                    return userId;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return -1;
+            }
+            catch (Exception ex)
+            {
+                throw new FaultException("Login error: " + ex.Message);
+            }
+        }
+
+        public string[] GetUserBalances(int userId)
+        {
+            EnsureDatabaseCreated();
+
+            List<string> balances = new List<string>();
+
+            using (SqlConnection connection = new SqlConnection(DatabaseConnectionString))
+            {
+                connection.Open();
+
+                string sql =
+                    @"SELECT CurrencyCode, Amount
+                      FROM Balances
+                      WHERE UserId = @UserId
+                      ORDER BY CurrencyCode;";
+
+                using (SqlCommand command = new SqlCommand(sql, connection))
+                {
+                    command.Parameters.AddWithValue("@UserId", userId);
+
+                    using (SqlDataReader reader = command.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            balances.Add(reader["CurrencyCode"] + ": " + reader["Amount"]);
+                        }
+                    }
+                }
+            }
+
+            return balances.ToArray();
+        }
+
+        public bool SaveUserTransaction(int userId, string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount)
         {
             try
             {
@@ -177,10 +293,11 @@ namespace CurrencyExchangeService
 
                     string sql =
                         @"INSERT INTO Transactions (UserId, FromCurrency, ToCurrency, Amount, ConvertedAmount)
-                          VALUES (1, @FromCurrency, @ToCurrency, @Amount, @ConvertedAmount);";
+                          VALUES (@UserId, @FromCurrency, @ToCurrency, @Amount, @ConvertedAmount);";
 
                     using (SqlCommand command = new SqlCommand(sql, connection))
                     {
+                        command.Parameters.AddWithValue("@UserId", userId);
                         command.Parameters.AddWithValue("@FromCurrency", NormalizeCurrencyCode(fromCurrency));
                         command.Parameters.AddWithValue("@ToCurrency", NormalizeCurrencyCode(toCurrency));
                         command.Parameters.AddWithValue("@Amount", amount);
@@ -198,24 +315,26 @@ namespace CurrencyExchangeService
             }
         }
 
-        public string[] GetRecentTransactions()
+        public string[] GetRecentTransactionsByUser(int userId)
         {
-            try
+            EnsureDatabaseCreated();
+
+            List<string> transactions = new List<string>();
+
+            using (SqlConnection connection = new SqlConnection(DatabaseConnectionString))
             {
-                EnsureDatabaseCreated();
+                connection.Open();
 
-                List<string> transactions = new List<string>();
+                string sql =
+                    @"SELECT TOP 20 FromCurrency, ToCurrency, Amount, ConvertedAmount, TransactionDate
+                      FROM Transactions
+                      WHERE UserId = @UserId
+                      ORDER BY TransactionDate DESC;";
 
-                using (SqlConnection connection = new SqlConnection(DatabaseConnectionString))
+                using (SqlCommand command = new SqlCommand(sql, connection))
                 {
-                    connection.Open();
+                    command.Parameters.AddWithValue("@UserId", userId);
 
-                    string sql =
-                        @"SELECT TOP 20 FromCurrency, ToCurrency, Amount, ConvertedAmount, TransactionDate
-                          FROM Transactions
-                          ORDER BY TransactionDate DESC;";
-
-                    using (SqlCommand command = new SqlCommand(sql, connection))
                     using (SqlDataReader reader = command.ExecuteReader())
                     {
                         while (reader.Read())
@@ -233,12 +352,83 @@ namespace CurrencyExchangeService
                         }
                     }
                 }
-
-                return transactions.ToArray();
             }
-            catch (Exception ex)
+
+            return transactions.ToArray();
+        }
+
+        public bool SaveTransaction(string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount)
+        {
+            return SaveUserTransaction(1, fromCurrency, toCurrency, amount, convertedAmount);
+        }
+
+        public string[] GetRecentTransactions()
+        {
+            return GetRecentTransactionsByUser(1);
+        }
+
+        private void CreateDefaultBalances(SqlConnection connection, int userId)
+        {
+            if (userId <= 0)
             {
-                throw new FaultException("Transaction history error: " + ex.Message);
+                return;
+            }
+
+            string checkSql = "SELECT COUNT(*) FROM Balances WHERE UserId = @UserId;";
+
+            using (SqlCommand checkCommand = new SqlCommand(checkSql, connection))
+            {
+                checkCommand.Parameters.AddWithValue("@UserId", userId);
+
+                int count = Convert.ToInt32(checkCommand.ExecuteScalar());
+
+                if (count > 0)
+                {
+                    return;
+                }
+            }
+
+            string insertSql =
+                @"INSERT INTO Balances (UserId, CurrencyCode, Amount) VALUES (@UserId, 'PLN', 1000.00);
+                  INSERT INTO Balances (UserId, CurrencyCode, Amount) VALUES (@UserId, 'USD', 500.00);
+                  INSERT INTO Balances (UserId, CurrencyCode, Amount) VALUES (@UserId, 'EUR', 300.00);";
+
+            using (SqlCommand command = new SqlCommand(insertSql, connection))
+            {
+                command.Parameters.AddWithValue("@UserId", userId);
+                command.ExecuteNonQuery();
+            }
+        }
+
+        private int GetUserIdByUsername(SqlConnection connection, string username)
+        {
+            string sql = "SELECT UserId FROM Users WHERE Username = @Username;";
+
+            using (SqlCommand command = new SqlCommand(sql, connection))
+            {
+                command.Parameters.AddWithValue("@Username", username.Trim());
+
+                object result = command.ExecuteScalar();
+
+                if (result == null)
+                {
+                    return -1;
+                }
+
+                return Convert.ToInt32(result);
+            }
+        }
+
+        private void ValidateUserInput(string username, string password)
+        {
+            if (string.IsNullOrWhiteSpace(username))
+            {
+                throw new FaultException("Username cannot be empty.");
+            }
+
+            if (string.IsNullOrWhiteSpace(password))
+            {
+                throw new FaultException("Password cannot be empty.");
             }
         }
 
@@ -247,6 +437,22 @@ namespace CurrencyExchangeService
             using (SqlCommand command = new SqlCommand(sql, connection))
             {
                 command.ExecuteNonQuery();
+            }
+        }
+
+        private string HashPassword(string password)
+        {
+            using (SHA256 sha256 = SHA256.Create())
+            {
+                byte[] bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(password));
+                StringBuilder builder = new StringBuilder();
+
+                foreach (byte b in bytes)
+                {
+                    builder.Append(b.ToString("x2"));
+                }
+
+                return builder.ToString();
             }
         }
 

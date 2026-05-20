@@ -18,6 +18,21 @@ namespace CurrencyExchangeService
         bool EnsureDatabaseCreated();
 
         [OperationContract]
+        bool RegisterUser(string username, string password);
+
+        [OperationContract]
+        int LoginUser(string username, string password);
+
+        [OperationContract]
+        string[] GetUserBalances(int userId);
+
+        [OperationContract]
+        bool SaveUserTransaction(int userId, string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount);
+
+        [OperationContract]
+        string[] GetRecentTransactionsByUser(int userId);
+
+        [OperationContract]
         bool SaveTransaction(string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount);
 
         [OperationContract]

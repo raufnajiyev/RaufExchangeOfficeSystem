@@ -21,6 +21,21 @@ namespace CurrencyExchangeClient
         bool EnsureDatabaseCreated();
 
         [OperationContract]
+        bool RegisterUser(string username, string password);
+
+        [OperationContract]
+        int LoginUser(string username, string password);
+
+        [OperationContract]
+        string[] GetUserBalances(int userId);
+
+        [OperationContract]
+        bool SaveUserTransaction(int userId, string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount);
+
+        [OperationContract]
+        string[] GetRecentTransactionsByUser(int userId);
+
+        [OperationContract]
         bool SaveTransaction(string fromCurrency, string toCurrency, decimal amount, decimal convertedAmount);
 
         [OperationContract]
@@ -31,12 +46,15 @@ namespace CurrencyExchangeClient
     {
         private const string ServiceUrl = "http://localhost:58696/Service1.svc";
 
+        private int currentUserId = -1;
+        private string currentUsername = string.Empty;
+
         public MainWindow()
         {
             InitializeComponent();
             LoadCurrencies();
             InitializeDatabase();
-            LoadTransactionHistory();
+            LoginDefaultUser();
         }
 
         private void LoadCurrencies()
@@ -84,7 +102,53 @@ namespace CurrencyExchangeClient
             }
         }
 
-        private void LoadTransactionHistory()
+        private void LoginDefaultUser()
+        {
+            UsernameTextBox.Text = "demo";
+            PasswordInputBox.Password = "demo";
+            LoginUser("demo", "demo", false);
+        }
+
+        private void LoginButton_Click(object sender, RoutedEventArgs e)
+        {
+            LoginUser(UsernameTextBox.Text, PasswordInputBox.Password, true);
+        }
+
+        private void RegisterButton_Click(object sender, RoutedEventArgs e)
+        {
+            string username = UsernameTextBox.Text;
+            string password = PasswordInputBox.Password;
+
+            IService1 client = null;
+            IClientChannel channel = null;
+
+            try
+            {
+                client = CreateServiceClient();
+                channel = (IClientChannel)client;
+
+                bool registered = client.RegisterUser(username, password);
+
+                channel.Close();
+
+                if (registered)
+                {
+                    MessageBox.Show("User registered successfully.");
+                    LoginUser(username, password, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (channel != null)
+                {
+                    channel.Abort();
+                }
+
+                MessageBox.Show("Registration error: " + ex.Message);
+            }
+        }
+
+        private void LoginUser(string username, string password, bool showMessage)
         {
             IService1 client = null;
             IClientChannel channel = null;
@@ -94,7 +158,67 @@ namespace CurrencyExchangeClient
                 client = CreateServiceClient();
                 channel = (IClientChannel)client;
 
-                string[] transactions = client.GetRecentTransactions();
+                int userId = client.LoginUser(username, password);
+
+                channel.Close();
+
+                if (userId > 0)
+                {
+                    currentUserId = userId;
+                    currentUsername = username;
+
+                    AccountStatusTextBlock.Text = "Logged in as: " + currentUsername;
+
+                    LoadTransactionHistory();
+                    LoadBalances();
+
+                    if (showMessage)
+                    {
+                        MessageBox.Show("Login successful.");
+                    }
+                }
+                else
+                {
+                    currentUserId = -1;
+                    currentUsername = string.Empty;
+                    AccountStatusTextBlock.Text = "Invalid username or password.";
+
+                    HistoryListBox.Items.Clear();
+                    BalancesListBox.Items.Clear();
+
+                    if (showMessage)
+                    {
+                        MessageBox.Show("Invalid username or password.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (channel != null)
+                {
+                    channel.Abort();
+                }
+
+                MessageBox.Show("Login error: " + ex.Message);
+            }
+        }
+
+        private void LoadTransactionHistory()
+        {
+            if (currentUserId <= 0)
+            {
+                return;
+            }
+
+            IService1 client = null;
+            IClientChannel channel = null;
+
+            try
+            {
+                client = CreateServiceClient();
+                channel = (IClientChannel)client;
+
+                string[] transactions = client.GetRecentTransactionsByUser(currentUserId);
 
                 HistoryListBox.Items.Clear();
 
@@ -114,8 +238,49 @@ namespace CurrencyExchangeClient
             }
         }
 
+        private void LoadBalances()
+        {
+            if (currentUserId <= 0)
+            {
+                return;
+            }
+
+            IService1 client = null;
+            IClientChannel channel = null;
+
+            try
+            {
+                client = CreateServiceClient();
+                channel = (IClientChannel)client;
+
+                string[] balances = client.GetUserBalances(currentUserId);
+
+                BalancesListBox.Items.Clear();
+
+                foreach (string balance in balances)
+                {
+                    BalancesListBox.Items.Add(balance);
+                }
+
+                channel.Close();
+            }
+            catch
+            {
+                if (channel != null)
+                {
+                    channel.Abort();
+                }
+            }
+        }
+
         private void ConvertButton_Click(object sender, RoutedEventArgs e)
         {
+            if (currentUserId <= 0)
+            {
+                MessageBox.Show("Please login first.");
+                return;
+            }
+
             string fromCurrency = FromCurrencyComboBox.SelectedItem?.ToString();
             string toCurrency = ToCurrencyComboBox.SelectedItem?.ToString();
 
@@ -149,14 +314,15 @@ namespace CurrencyExchangeClient
 
                 decimal result = client.ConvertCurrency(fromCurrency, toCurrency, amount);
 
-                client.SaveTransaction(fromCurrency, toCurrency, amount, result);
+                client.SaveUserTransaction(currentUserId, fromCurrency, toCurrency, amount, result);
 
-                string resultText = $"{amount} {fromCurrency} = {result} {toCurrency}";
+                string resultText = amount + " " + fromCurrency + " = " + result + " " + toCurrency;
                 ResultTextBlock.Text = resultText;
 
                 channel.Close();
 
                 LoadTransactionHistory();
+                LoadBalances();
             }
             catch (Exception ex)
             {
